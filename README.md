@@ -23,6 +23,10 @@ To train a Consistency Autoencoder on your own audio data:
 python train.py --data_dir /path/to/data --batch_size 2 --precision bf16-mixed
 ```
 
+Training now includes a Rich live progress display with train/validation metric tables and per-epoch progress bars. Disable it with `--no-rich-progress` if needed.
+
+Weights & Biases logging is **enabled by default** and logs training/validation losses (no checkpoints or large files are uploaded). Disable with `--no-wandb`. Configure the project and run name with `--wandb_project` and `--wandb_name`.
+
 The `--data_dir` should contain `train/` and `test/` subdirectories with audio files.
 
 ### TOML Config Files
@@ -50,6 +54,10 @@ CLI arguments override values from the config file. See `config.example.toml` fo
 | `--max_epochs` | `1000` | Max training epochs |
 | `--max_steps` | `-1` | Max training steps (`-1` = no limit) |
 | `--resume` | `None` | Checkpoint path to resume from |
+| `--rich-progress` / `--no-rich-progress` | `True` | Enable Rich live metric tables and progress bars |
+| `--wandb` / `--no-wandb` | `True` | Enable Weights & Biases loss logging |
+| `--wandb_project` | `music2latent` | wandb project name |
+| `--wandb_name` | `None` | wandb run name (auto-generated if not set) |
 
 
 ## Installation
