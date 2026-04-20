@@ -15,6 +15,43 @@ A generative model can then be trained on these embeddings, or they can be used 
 Music2Latent was trained on __music__ and on __speech__. Refer to the [paper](https://arxiv.org/abs/2408.06500) for more details.
 
 
+## Training
+
+To train a Consistency Autoencoder on your own audio data:
+
+```bash
+python train.py --data_dir /path/to/data --batch_size 2 --precision bf16-mixed
+```
+
+The `--data_dir` should contain `train/` and `test/` subdirectories with audio files.
+
+### TOML Config Files
+
+You can define all hyperparameters in a TOML config file and pass it with `--config`:
+
+```bash
+python train.py --config my_config.toml
+```
+
+CLI arguments override values from the config file. See `config.example.toml` for a full list of available settings.
+
+### Key Arguments
+
+| Argument | Default | Description |
+|---|---|---|
+| `--config` | `None` | TOML config file (values used as defaults, CLI overrides) |
+| `--data_dir` | *required* | Root dir with `train/` and `test/` subdirectories |
+| `--segment_seconds` | `4.0` | Audio chunk length in seconds |
+| `--sample_rate` | `44100` | Target sample rate |
+| `--batch_size` | `2` | Batch size per GPU |
+| `--grad_accum` | `4` | Gradient accumulation steps (effective batch = bs × this) |
+| `--precision` | `bf16-mixed` | AMP precision (`32`, `16-mixed`, `bf16-mixed`) |
+| `--learning_rate` | `1e-4` | Learning rate |
+| `--max_epochs` | `1000` | Max training epochs |
+| `--max_steps` | `-1` | Max training steps (`-1` = no limit) |
+| `--resume` | `None` | Checkpoint path to resume from |
+
+
 ## Installation
 
    ```bash

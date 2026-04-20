@@ -1,0 +1,25 @@
+# music2latent training config
+# Usage: python train.py --config config.example.toml --data_dir /path/to/data
+# CLI arguments override values defined here.
+
+data_dir = "/home/phil/Audiosep/Datasets/combined"
+segment_seconds = 4.0
+sample_rate = 44100
+batch_size = 2
+num_workers = 4
+max_epochs = 1000
+max_steps = -1
+learning_rate = 1e-4
+weight_decay = 0.01
+ema_decay = 0.998
+warmup_steps = 5000
+grad_accum = 4
+precision = "bf16-mixed"
+accelerator = "auto"
+devices = 1
+checkpoint_dir = "checkpoints"
+log_dir = "logs"
+resume = null  # set to checkpoint path to resume
+num_noise_levels = 64
+P_mean = -1.1
+P_std = 1.6
