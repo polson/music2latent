@@ -1,0 +1,7 @@
+P_mean: -1.1
+P_std: 1.6
+ema_decay: 0.998
+learning_rate: 0.0001
+num_noise_levels: 64
+warmup_steps: 5000
+weight_decay: 0.01

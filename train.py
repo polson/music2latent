@@ -32,6 +32,15 @@ from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
 from pytorch_lightning.loggers import TensorBoardLogger
 
 from music2latent.models import UNet, Encoder, Decoder
+from musicsep_visualizer import VisualizationHook
+
+
+def compute_sdr(clean, recon):
+    """Fast waveform SDR (SI-SDR style), pure GPU tensor ops."""
+    noise = clean - recon
+    return 10.0 * torch.log10(
+        torch.clamp((clean ** 2).sum(dim=-1) / (noise ** 2).sum(dim=-1), min=1e-8)
+    )  # [B]
 from music2latent.audio import to_representation_encoder, to_waveform
 from music2latent.utils import get_c, get_sigma, add_noise
 from music2latent.hparams import (
@@ -293,7 +302,7 @@ class ConsistencyAutoencoder(pl.LightningModule):
         )
 
     def on_fit_start(self):
-        """Create EMA teacher after model is on device."""
+        """Create EMA teacher and visualization hooks after model is on device."""
         if self.ema is None:
             self.ema = EMA(self.model, decay=self.ema_decay)
             self.ema_model = UNet().to(self.device)
@@ -301,6 +310,16 @@ class ConsistencyAutoencoder(pl.LightningModule):
             self.ema_model.eval()
             for p in self.ema_model.parameters():
                 p.requires_grad = False
+
+        # Visualization hooks (nn.Identity passthrough — only active on CUDA)
+        self.input_viz = VisualizationHook("train/recon_waveform")
+        self.target_viz = VisualizationHook("train/input_waveform")
+        self.student_stft_viz = VisualizationHook("train/student_stft_real")
+        self.target_stft_viz = VisualizationHook("train/input_stft_real")
+        self.val_input_viz = VisualizationHook("val/recon_waveform")
+        self.val_target_viz = VisualizationHook("val/input_waveform")
+        self.val_recon_stft_viz = VisualizationHook("val/recon_stft_real")
+        self.val_target_stft_viz = VisualizationHook("val/input_stft_real")
 
     def forward(self, x_0, sigma=None):
         """Encode then decode at given noise level."""
@@ -377,6 +396,22 @@ class ConsistencyAutoencoder(pl.LightningModule):
         self.log("train/loss", loss, prog_bar=True, on_step=True, on_epoch=True, sync_dist=True)
         self.log("train/sigma_mean", sigma_next.mean(), on_step=True, on_epoch=False)
 
+        # Waveform SDR of student reconstruction vs clean target
+        with torch.no_grad():
+            recon_wave = to_waveform(student_pred.detach().float())
+            clean_wave = to_waveform(x_0.detach().float())
+            sdr = compute_sdr(clean_wave, recon_wave)
+            self.log("train/sdr", sdr.mean(), prog_bar=True, on_step=True, on_epoch=True, sync_dist=True)
+
+            # ---- Visualization ----
+            # VisualizationHook is a zero-overhead nn.Identity until the
+            # subprocess starts; it rate-limits internally to ~30 FPS.
+            if x_0.is_cuda:
+                self.input_viz(recon_wave[:1])
+                self.target_viz(clean_wave[:1])
+                self.student_stft_viz(student_pred[0, 0].detach().float())
+                self.target_stft_viz(x_0[0, 0].detach().float())
+
         return loss
 
     def validation_step(self, batch, batch_idx):
@@ -398,6 +433,15 @@ class ConsistencyAutoencoder(pl.LightningModule):
                 latents = self.model.encoder(x_0)
                 recon_noisy = self.model(latents, x_noisy, sigma=sigma_test)
                 noisy_recon_loss = F.mse_loss(recon_noisy.float(), x_0.float())
+
+            # ---- Visualization ----
+            if x_0.is_cuda:
+                recon_wave = to_waveform(recon.float())
+                clean_wave = to_waveform(x_0.float())
+                self.val_input_viz(recon_wave[:1])
+                self.val_target_viz(clean_wave[:1])
+                self.val_recon_stft_viz(recon[0, 0].float())
+                self.val_target_stft_viz(x_0[0, 0].float())
 
         self.log("val/recon_loss", recon_loss, prog_bar=True, sync_dist=True)
         self.log("val/noisy_recon_loss", noisy_recon_loss, sync_dist=True)
