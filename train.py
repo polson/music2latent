@@ -26,13 +26,19 @@ import numpy as np
 import soundfile as sf
 import torch
 import torch.nn.functional as F
-import pytorch_lightning as pl
+try:
+    import lightning.pytorch as pl
+    from lightning.pytorch.callbacks import ModelCheckpoint, LearningRateMonitor
+    from lightning.pytorch.loggers import TensorBoardLogger
+except ImportError:  # pragma: no cover - compatibility fallback
+    import pytorch_lightning as pl
+    from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
+    from pytorch_lightning.loggers import TensorBoardLogger
 from torch.utils.data import Dataset, DataLoader
-from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
-from pytorch_lightning.loggers import TensorBoardLogger
 
 from music2latent.models import UNet, Encoder, Decoder
 from musicsep_visualizer import VisualizationHook
+from rich_training_progress import TrainingProgressBar
 
 
 def compute_sdr(clean, recon):
@@ -393,15 +399,17 @@ class ConsistencyAutoencoder(pl.LightningModule):
         p_weight = (sigma_next ** 2 + sigma_data ** 2) / (sigma_next * sigma_data) ** 2
         loss = (loss * p_weight).mean()
 
+        sigma_mean = sigma_next.mean()
         self.log("train/loss", loss, prog_bar=True, on_step=True, on_epoch=True, sync_dist=True)
-        self.log("train/sigma_mean", sigma_next.mean(), on_step=True, on_epoch=False)
+        self.log("train/sigma_mean", sigma_mean, on_step=True, on_epoch=False)
 
         # Waveform SDR of student reconstruction vs clean target
         with torch.no_grad():
             recon_wave = to_waveform(student_pred.detach().float())
             clean_wave = to_waveform(x_0.detach().float())
             sdr = compute_sdr(clean_wave, recon_wave)
-            self.log("train/sdr", sdr.mean(), prog_bar=True, on_step=True, on_epoch=True, sync_dist=True)
+            sdr_mean = sdr.mean()
+            self.log("train/sdr", sdr_mean, prog_bar=True, on_step=True, on_epoch=True, sync_dist=True)
 
             # ---- Visualization ----
             # VisualizationHook is a zero-overhead nn.Identity until the
@@ -412,7 +420,16 @@ class ConsistencyAutoencoder(pl.LightningModule):
                 self.student_stft_viz(student_pred[0, 0].detach().float())
                 self.target_stft_viz(x_0[0, 0].detach().float())
 
-        return loss
+        return {
+            "loss": loss,
+            "metrics": {
+                "train": {
+                    "loss": loss.detach(),
+                    "sigma_mean": sigma_mean.detach(),
+                    "sdr": sdr_mean.detach(),
+                }
+            },
+        }
 
     def validation_step(self, batch, batch_idx):
         x_0 = batch
@@ -446,7 +463,14 @@ class ConsistencyAutoencoder(pl.LightningModule):
         self.log("val/recon_loss", recon_loss, prog_bar=True, sync_dist=True)
         self.log("val/noisy_recon_loss", noisy_recon_loss, sync_dist=True)
 
-        return recon_loss
+        return {
+            "metrics": {
+                "val": {
+                    "recon_loss": recon_loss.detach(),
+                    "noisy_recon_loss": noisy_recon_loss.detach(),
+                }
+            }
+        }
 
     def on_train_batch_end(self, outputs, batch, batch_idx):
         """Update EMA after each optimizer step."""
@@ -536,11 +560,20 @@ def main():
     parser.add_argument("--log_dir", type=str, default="logs")
     parser.add_argument("--resume", type=str, default=None,
                         help="Checkpoint path to resume training from")
+    parser.add_argument("--rich-progress", dest="rich_progress", action=argparse.BooleanOptionalAction, default=True,
+                        help="Enable rich live training progress tables and bars")
     parser.add_argument("--num_noise_levels", type=int, default=64)
     parser.add_argument("--P_mean", type=float, default=-1.1,
                         help="Mean of log-sigma sampling distribution")
     parser.add_argument("--P_std", type=float, default=1.6,
                         help="Std of log-sigma sampling distribution")
+    parser.add_argument("--no-wandb", dest="wandb", action="store_false",
+                        help="Disable Weights & Biases logging")
+    parser.add_argument("--wandb_project", type=str, default="music2latent",
+                        help="wandb project name")
+    parser.add_argument("--wandb_name", type=str, default=None,
+                        help="wandb run name (default: auto-generated)")
+    parser.set_defaults(wandb=True)
     # Pre-parse just --config to load defaults, then do the full parse
     _pre = parser.parse_known_args()[0]
     _load_config_defaults(parser, _pre.config)
@@ -587,8 +620,19 @@ def main():
         ),
         LearningRateMonitor(logging_interval="step"),
     ]
+    if args.rich_progress:
+        callbacks.append(TrainingProgressBar(hide_metrics=["sigma_mean"]))
 
-    logger = TensorBoardLogger(save_dir=args.log_dir, name="music2latent")
+    loggers = [TensorBoardLogger(save_dir=args.log_dir, name="music2latent")]
+    if args.wandb:
+        from lightning.pytorch.loggers import WandbLogger
+        loggers.append(
+            WandbLogger(
+                project=args.wandb_project,
+                name=args.wandb_name,
+                log_model=False,
+            )
+        )
 
     trainer = pl.Trainer(
         accelerator=args.accelerator,
@@ -599,7 +643,8 @@ def main():
         gradient_clip_val=1.0,
         accumulate_grad_batches=args.grad_accum,
         callbacks=callbacks,
-        logger=logger,
+        logger=loggers,
+        enable_progress_bar=not args.rich_progress,
         log_every_n_steps=10,
         num_sanity_val_steps=0,
         benchmark=True,
